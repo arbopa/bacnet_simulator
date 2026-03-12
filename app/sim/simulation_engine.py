@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import time
 from collections import defaultdict, deque
@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.models.object_model import BehaviorMode, ObjectType
 from app.models.project_model import ProjectModel
+from app.runtime import PointRegistry, RuntimePoint
 from app.sim.behaviors import BehaviorContext, apply_behavior
 from app.sim.logic_engine import LogicEngine
 from app.sim.scenarios import apply_scenario
@@ -31,6 +32,7 @@ class SimulationEngine(QObject):
         self._paused = False
         self._last_time = time.monotonic()
         self.logic = LogicEngine()
+        self.registry = PointRegistry()
         self.trends: Dict[str, Deque[Tuple[float, float]]] = defaultdict(lambda: deque(maxlen=1800))
         self.trend_logs: Dict[str, Deque[Tuple[float, float]]] = defaultdict(lambda: deque(maxlen=3600))
 
@@ -40,6 +42,16 @@ class SimulationEngine(QObject):
 
     def set_project(self, project: ProjectModel) -> None:
         self._project = project
+        self.rebuild_runtime_registry()
+
+    def rebuild_runtime_registry(self) -> None:
+        if self._project is None:
+            self.registry = PointRegistry()
+            return
+        self.registry.rebuild(self._project)
+
+    def get_runtime_point(self, point_ref: str) -> RuntimePoint | None:
+        return self.registry.get(point_ref)
 
     def set_interval_ms(self, interval_ms: int) -> None:
         self._interval_ms = max(100, interval_ms)
@@ -85,6 +97,7 @@ class SimulationEngine(QObject):
             for point in device.objects:
                 point.present_value = point.initial_value
                 point.priority_array = [None] * 16
+                self.registry.set_value(point.object_ref(device.name), point.initial_value, sync_model=False)
         self.message.emit("All point values reset to initial values.")
 
     def _tick(self) -> None:
@@ -135,6 +148,7 @@ class SimulationEngine(QObject):
                     point.present_value = apply_behavior(point, linked_value, context)
 
                 ref = point.object_ref(device.name)
+                self.registry.set_value(ref, point.present_value)
                 try:
                     numeric = float(point.present_value)
                     self.trends[ref].append((now_real, numeric))
@@ -160,6 +174,7 @@ class SimulationEngine(QObject):
                 trend_ref = point.object_ref(device.name)
                 self.trend_logs[trend_ref].append((now_real, value))
                 point.present_value = value
+                self.registry.set_value(trend_ref, value)
                 self.trends[trend_ref].append((now_real, value))
                 snapshot[trend_ref] = value
 
@@ -176,3 +191,4 @@ class SimulationEngine(QObject):
         if last_n <= 0:
             return list(samples)
         return list(samples)[-last_n:]
+

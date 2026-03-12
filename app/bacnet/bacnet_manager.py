@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -8,6 +8,7 @@ from typing import Optional
 from PySide6.QtCore import QObject, Signal
 
 from app.models.project_model import ProjectModel
+from app.runtime import PointRegistry
 
 from .bacnet_device import BacnetDeviceServer
 
@@ -21,6 +22,7 @@ class BacnetManager(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._project: Optional[ProjectModel] = None
+        self._registry: Optional[PointRegistry] = None
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._tick_event: Optional[asyncio.Event] = None
@@ -93,6 +95,11 @@ class BacnetManager(QObject):
     def set_project(self, project: ProjectModel) -> None:
         self._project = project
 
+    def set_registry(self, registry: PointRegistry | None) -> None:
+        self._registry = registry
+        if self._server is not None:
+            self._server.registry = registry
+
     def start(self) -> None:
         if self._running:
             return
@@ -138,7 +145,7 @@ class BacnetManager(QObject):
             assert self._project is not None
             self._patch_bacpypes3_ipv4_reuse_port()
             bind_ip = self._project.bacnet.bind_ip
-            self._server = BacnetDeviceServer(bind_ip)
+            self._server = BacnetDeviceServer(bind_ip, registry=self._registry)
             try:
                 await self._server.start(self._project.devices)
                 self._running = True

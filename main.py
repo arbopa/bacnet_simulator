@@ -1,16 +1,16 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
-from app.bacnet.bacnet_manager import BacnetManager
 from app.gui.dialogs import AddDeviceDialog, AddObjectDialog
 from app.gui.main_window import MainWindow
 from app.models.object_model import BehaviorConfig, BehaviorMode, ObjectModel, ObjectType, ScheduleConfig
 from app.models.project_model import ProjectModel
 from app.models.template_defs import build_template
+from app.protocol import BacnetProtocolAdapter, ModbusProtocolAdapter, MqttProtocolAdapter, ProtocolManager
 from app.sim.simulation_engine import SimulationEngine
 from app.storage.project_io import load_project, save_project
 from app.utils.logging_setup import configure_logging
@@ -21,7 +21,10 @@ class AppController:
     def __init__(self):
         self.window = MainWindow()
         self.sim = SimulationEngine()
-        self.bacnet = BacnetManager()
+        self.protocols = ProtocolManager()
+        self.protocols.register_adapter(BacnetProtocolAdapter(parent=self.protocols))
+        self.protocols.register_adapter(ModbusProtocolAdapter(parent=self.protocols))
+        self.protocols.register_adapter(MqttProtocolAdapter(parent=self.protocols))
 
         self.project = ProjectModel()
         self.current_path: Path | None = None
@@ -58,21 +61,25 @@ class AppController:
         self.sim.started.connect(lambda: self.window.log("Simulation running."))
         self.sim.stopped.connect(lambda: self.window.log("Simulation stopped."))
 
-        self.bacnet.status_changed.connect(self.window.log)
-        self.bacnet.error.connect(self.window.log)
+        self.protocols.message.connect(self.window.log)
 
         self.window.live_table.itemSelectionChanged.connect(self._refresh_selected_trend)
 
     def _set_project(self, project: ProjectModel) -> None:
         self.project = project
         self.sim.set_project(self.project)
-        self.bacnet.set_project(self.project)
+        self.protocols.set_project(self.project)
+        self.protocols.set_registry(self.sim.registry)
         self.window.set_project(self.project)
         self.window.device_editor.set_device(None)
         self.window.object_editor.set_object(None)
 
     def show(self) -> None:
         self.window.show()
+
+    def _refresh_runtime_registry(self) -> None:
+        self.sim.rebuild_runtime_registry()
+        self.protocols.set_registry(self.sim.registry)
 
     def new_project(self) -> None:
         self.stop_simulation()
@@ -137,6 +144,7 @@ class AppController:
             data["port"],
         )
         self.project.devices.append(device)
+        self._refresh_runtime_registry()
         self.window.set_project(self.project)
         self.window.log(f"Added device {device.name} from template {data['template']}.")
 
@@ -182,11 +190,13 @@ class AppController:
             obj.metadata["source_ref"] = ""
 
         device.objects.append(obj)
+        self._refresh_runtime_registry()
         self.window.set_project(self.project)
         self.window.log(f"Added object {device.name}.{obj.name}.")
 
     def delete_device(self, device_name: str) -> None:
         self.project.devices = [device for device in self.project.devices if device.name != device_name]
+        self._refresh_runtime_registry()
         self.window.set_project(self.project)
         self.window.log(f"Deleted device {device_name}.")
 
@@ -195,6 +205,7 @@ class AppController:
         if not device:
             return
         device.remove_object(object_name)
+        self._refresh_runtime_registry()
         self.window.set_project(self.project)
         self.window.log(f"Deleted object {device_name}.{object_name}.")
 
@@ -216,20 +227,22 @@ class AppController:
         self._refresh_selected_trend()
 
     def _on_device_saved(self) -> None:
+        self._refresh_runtime_registry()
         self.window.set_project(self.project)
         self.window.log("Device changes saved.")
 
     def _on_object_saved(self) -> None:
+        self._refresh_runtime_registry()
         self.window.set_project(self.project)
         self.window.log("Object changes saved.")
 
     def start_simulation(self) -> None:
         self.sim.start()
-        self.bacnet.start()
+        self.protocols.start()
 
     def stop_simulation(self) -> None:
         self.sim.stop()
-        self.bacnet.stop()
+        self.protocols.stop()
 
     def _reset_sim(self) -> None:
         self.sim.reset_values()
@@ -237,7 +250,7 @@ class AppController:
 
     def _on_tick(self, snapshot: dict[str, float]) -> None:
         self.window.update_live_values(snapshot)
-        self.bacnet.notify_simulation_tick()
+        self.protocols.notify_simulation_tick()
         self._refresh_selected_trend()
 
     def _refresh_selected_trend(self) -> None:
@@ -271,4 +284,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

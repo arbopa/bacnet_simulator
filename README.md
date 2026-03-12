@@ -1,6 +1,6 @@
-﻿# BACnet BAS Simulator (PySide6 + BACpypes3)
+# BACnet BAS Simulator (PySide6 + BACpypes3)
 
-Desktop BACnet/IP building automation simulator for Niagara 4 training and testing.
+Desktop building automation simulator for Niagara 4 training and testing.
 
 ## Python Version
 
@@ -34,7 +34,11 @@ Desktop BACnet/IP building automation simulator for Niagara 4 training and testi
   - Schedule-driven
 - Internal logic rules (safe declarative rules, no arbitrary eval)
 - Live value table and trend chart in GUI
-- BACnet manager with BACpypes3 integration and UI status/logging
+- Runtime point registry with dirty-point tracking
+- Protocol manager + protocol adapter layer
+- BACnet protocol adapter (active)
+- Modbus protocol adapter stub (registered, unavailable)
+- MQTT protocol adapter stub (registered, unavailable)
 - Portable project persistence (`.yaml`)
 
 ## Install
@@ -85,7 +89,9 @@ The sample includes:
 
 1. Click `Start` in the toolbar.
 2. Simulation values begin updating at 1 second intervals.
-3. BACnet manager starts BACnet/IP device emulation.
+3. Protocol manager starts available adapters:
+   - BACnet adapter starts if BACpypes3 is available.
+   - Modbus/MQTT stubs currently report unavailable.
 4. Use `Pause`, `Resume`, `Stop`, and `Reset` as needed.
 
 ## Niagara 4 Connection Guide
@@ -118,6 +124,20 @@ Use the test checklist:
 ## Architecture
 
 ```text
+GUI (PySide6)
+  -> ProjectModel / DeviceModel / ObjectModel
+  -> SimulationEngine
+     -> PointRegistry (runtime ownership lives here)
+  -> ProtocolManager
+     -> BacnetProtocolAdapter
+     -> ModbusProtocolAdapter (stub)
+     -> MqttProtocolAdapter (stub)
+  -> Protocol runtimes (BACnet active)
+```
+
+Repository layout:
+
+```text
 bacnet_simulator/
   main.py
   requirements.txt
@@ -125,10 +145,13 @@ bacnet_simulator/
   run.bat
   docs/
     niagara_test_checklist.md
+    future_releases.md
   app/
     gui/
     models/
+    runtime/
     sim/
+    protocol/
     bacnet/
     storage/
     utils/
@@ -136,13 +159,21 @@ bacnet_simulator/
     training_lab.yaml
 ```
 
+## Runtime Registry + Dirty Flow
+
+- Registry ownership is in `SimulationEngine`.
+- Protocol adapters receive the registry via `ProtocolManager`.
+- Simulation writes changed point values into registry.
+- Registry tracks dirty points and per-consumer pending state.
+- Each adapter claims dirty refs for its own consumer name, syncs them, then marks consumed.
+- Dirty flags clear only after all active consumers consume a point.
+
 ## Notes on BACnet/IP Emulation
 
 - BACpypes3 is used for BACnet/IP device/object hosting.
 - Each simulated device has its own device instance and UDP port.
-- The BACnet manager runs in a dedicated worker thread with an asyncio event loop.
-- Simulation-to-BACnet synchronization occurs on each simulation tick.
-- `Schedule` and `TrendLog` are modeled in the simulator and exposed via BACnet object mapping with runtime best-effort native object creation.
+- BACnet manager runs in a dedicated worker thread with an asyncio event loop.
+- Simulation-to-BACnet synchronization is driven by simulation tick notifications through the protocol manager.
 
 ## Troubleshooting
 
@@ -156,3 +187,4 @@ pip install bacpypes3
   - check Windows firewall UDP rules
   - confirm subnet/broadcast settings
   - verify device UDP ports are reachable
+
