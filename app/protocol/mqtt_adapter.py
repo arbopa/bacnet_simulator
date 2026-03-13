@@ -8,7 +8,7 @@ from app.runtime import PointRegistry
 from .protocol_adapter import ProtocolAdapter
 
 
-class MqttProtocolAdapter(QObject, ProtocolAdapter):
+class MqttProtocolAdapter(QObject):
     message = Signal(str)
 
     def __init__(self, parent=None):
@@ -36,3 +36,4 @@ class MqttProtocolAdapter(QObject, ProtocolAdapter):
 
     def notify_simulation_tick(self) -> None:
         return
+

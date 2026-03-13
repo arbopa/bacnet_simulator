@@ -9,7 +9,7 @@ from app.runtime import PointRegistry
 from .protocol_adapter import ProtocolAdapter
 
 
-class BacnetProtocolAdapter(QObject, ProtocolAdapter):
+class BacnetProtocolAdapter(QObject):
     message = Signal(str)
 
     def __init__(self, parent=None):
@@ -46,3 +46,4 @@ class BacnetProtocolAdapter(QObject, ProtocolAdapter):
 
     def _on_error(self, text: str) -> None:
         self.message.emit(f"[{self.name}] {text}")
+
