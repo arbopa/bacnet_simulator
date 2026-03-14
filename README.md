@@ -232,3 +232,27 @@ pip install bacpypes3
 
 
 
+
+## Licensing & Commercial Use
+
+This project uses a dual-use model:
+
+- Free Community Edition for individual and non-commercial learning use.
+- Paid Commercial License for business/consulting/internal training use.
+
+Commercial use examples that require a paid license:
+
+- internal corporate training labs
+- consultant/client project usage
+- paid training delivery
+- operational use inside a business environment
+
+Starter annual pricing:
+
+- Solo consultant (1 user): USD 149
+- Small company (2-20 users): USD 999
+- Mid-size company (21-100 users): USD 2,999
+- Enterprise (100+ users): custom quote
+
+See [TERMS.md](TERMS.md) and [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md).
+Commercial licensing contact: `contact@cameratricain.com`
