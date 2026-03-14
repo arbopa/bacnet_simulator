@@ -163,6 +163,7 @@ bacnet_simulator/
   docs/
     niagara_test_checklist.md
     future_releases.md
+    template_yaml_authoring.md
   app/
     gui/
     models/
@@ -176,6 +177,10 @@ bacnet_simulator/
     training_lab.yaml
 ```
 
+- Default sample regeneration script: `scripts/generate_training_lab.py`
+- New template/YAML guide: [docs/template_yaml_authoring.md](docs/template_yaml_authoring.md)
+
+## Authoring
 ## Runtime Registry + Dirty Flow
 
 - Registry ownership is in `SimulationEngine`.

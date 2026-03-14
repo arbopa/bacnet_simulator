@@ -48,6 +48,43 @@ def mixed_air(current: float, inputs: Dict[str, float], params: Dict[str, float]
     return _first_order(current, target, tau, dt)
 
 
+def airflow_from_fan(current: float, inputs: Dict[str, float], params: Dict[str, float], dt: float) -> float:
+    fan = _as_float(inputs.get("fan_status", inputs.get("command", 0.0)), 0.0)
+    design_flow = _as_float(params.get("design_flow", 20000.0), 20000.0)
+    min_flow = _as_float(params.get("min_flow", 0.0), 0.0)
+    tau = _as_float(params.get("tau", 10.0), 10.0)
+
+    target = min_flow if fan < 0.5 else design_flow
+    return _first_order(current, target, tau, dt)
+
+
+def scaled_input(current: float, inputs: Dict[str, float], params: Dict[str, float], dt: float) -> float:
+    source = _as_float(inputs.get("source", 0.0), 0.0)
+    gain = _as_float(params.get("gain", 1.0), 1.0)
+    bias = _as_float(params.get("bias", 0.0), 0.0)
+    tau = _as_float(params.get("tau", 8.0), 8.0)
+
+    target = bias + source * gain
+    return _first_order(current, target, tau, dt)
+
+
+def duct_static_pressure(current: float, inputs: Dict[str, float], params: Dict[str, float], dt: float) -> float:
+    fan = _as_float(inputs.get("fan_status", 0.0), 0.0)
+    airflow = _as_float(inputs.get("airflow", 0.0), 0.0)
+    setpoint = _as_float(inputs.get("setpoint", params.get("default_setpoint", 2.0)), 2.0)
+    design_flow = max(1.0, _as_float(params.get("design_flow", 20000.0), 20000.0))
+    off_pressure = _as_float(params.get("off_pressure", 0.05), 0.05)
+    tau = _as_float(params.get("tau", 12.0), 12.0)
+
+    if fan < 0.5:
+        target = off_pressure
+    else:
+        flow_ratio = max(0.2, min(1.2, airflow / design_flow))
+        target = setpoint * flow_ratio
+
+    return _first_order(current, target, tau, dt)
+
+
 def vav_flow(current: float, inputs: Dict[str, float], params: Dict[str, float], dt: float) -> float:
     damper = _pct(inputs.get("damper_cmd", 0.0))
     min_flow = _as_float(params.get("min_flow", 150.0), 150.0)
@@ -55,6 +92,21 @@ def vav_flow(current: float, inputs: Dict[str, float], params: Dict[str, float],
     tau = _as_float(params.get("tau", 8.0), 8.0)
 
     target = min_flow + damper * (max_flow - min_flow)
+    return _first_order(current, target, tau, dt)
+
+
+def differential_pressure(current: float, inputs: Dict[str, float], params: Dict[str, float], dt: float) -> float:
+    pump = _as_float(inputs.get("pump_status", 0.0), 0.0)
+    valve_cmd = _pct(inputs.get("valve_cmd", 100.0))
+    min_dp = _as_float(params.get("min_dp", 2.0), 2.0)
+    max_dp = _as_float(params.get("max_dp", 25.0), 25.0)
+    tau = _as_float(params.get("tau", 10.0), 10.0)
+
+    if pump < 0.5:
+        target = 0.0
+    else:
+        target = min_dp + valve_cmd * (max_dp - min_dp)
+
     return _first_order(current, target, tau, dt)
 
 
@@ -72,6 +124,54 @@ def zone_temp(current: float, inputs: Dict[str, float], params: Dict[str, float]
     return current + (airflow_effect + load_effect) * dt
 
 
+def chiller_lwt(current: float, inputs: Dict[str, float], params: Dict[str, float], dt: float) -> float:
+    run_status = _as_float(inputs.get("run_status", 0.0), 0.0)
+    setpoint = _as_float(inputs.get("setpoint", 44.0), 44.0)
+    entering_temp = _as_float(inputs.get("entering_temp", 56.0), 56.0)
+    chw_valve = _pct(inputs.get("chw_valve_cmd", 80.0))
+    off_temp = _as_float(params.get("off_temp", 62.0), 62.0)
+    tau = _as_float(params.get("tau", 75.0), 75.0)
+
+    if run_status < 0.5:
+        target = off_temp
+    else:
+        target = setpoint + 0.25 * (entering_temp - setpoint) + (1.0 - chw_valve) * 4.0
+
+    return _first_order(current, target, tau, dt)
+
+
+def chiller_ewt(current: float, inputs: Dict[str, float], params: Dict[str, float], dt: float) -> float:
+    run_status = _as_float(inputs.get("run_status", 0.0), 0.0)
+    leaving_temp = _as_float(inputs.get("leaving_temp", 48.0), 48.0)
+    cond_valve = _pct(inputs.get("cond_valve_cmd", 35.0))
+    off_temp = _as_float(params.get("off_temp", 66.0), 66.0)
+    delta_t = _as_float(params.get("delta_t", 8.0), 8.0)
+    tau = _as_float(params.get("tau", 90.0), 90.0)
+
+    if run_status < 0.5:
+        target = off_temp
+    else:
+        target = leaving_temp + delta_t + (1.0 - cond_valve) * 3.0
+
+    return _first_order(current, target, tau, dt)
+
+
+def boiler_water_temp(current: float, inputs: Dict[str, float], params: Dict[str, float], dt: float) -> float:
+    run_status = _as_float(inputs.get("run_status", 0.0), 0.0)
+    setpoint = _as_float(inputs.get("setpoint", 140.0), 140.0)
+    return_temp = _as_float(inputs.get("return_temp", 120.0), 120.0)
+    gas_cmd = _pct(inputs.get("gas_valve_cmd", 40.0))
+    off_temp = _as_float(params.get("off_temp", 110.0), 110.0)
+    tau = _as_float(params.get("tau", 90.0), 90.0)
+
+    if run_status < 0.5:
+        target = off_temp
+    else:
+        target = setpoint + (gas_cmd - 0.5) * 30.0 + 0.15 * (return_temp - setpoint)
+
+    return _first_order(current, target, tau, dt)
+
+
 def binary_status_delay(current: float, inputs: Dict[str, float], params: Dict[str, float], dt: float) -> float:
     command = 1.0 if _as_float(inputs.get("command", 0.0), 0.0) >= 0.5 else 0.0
     rise_tau = _as_float(params.get("rise_tau", 5.0), 5.0)
@@ -81,12 +181,33 @@ def binary_status_delay(current: float, inputs: Dict[str, float], params: Dict[s
     return 1.0 if next_value >= 0.5 else 0.0
 
 
+def binary_low_trip(current: float, inputs: Dict[str, float], params: Dict[str, float], dt: float) -> float:
+    source = _as_float(inputs.get("source", 0.0), 0.0)
+    trip = _as_float(params.get("trip", 38.0), 38.0)
+    reset = _as_float(params.get("reset", trip + 4.0), trip + 4.0)
+    state = 1.0 if _as_float(current, 0.0) >= 0.5 else 0.0
+
+    if source <= trip:
+        state = 1.0
+    elif source >= reset:
+        state = 0.0
+    return state
+
+
 _RESPONSE_FUNCTIONS: Dict[str, Callable[[float, Dict[str, float], Dict[str, float], float], float]] = {
     "ahu_sat": ahu_sat,
     "mixed_air": mixed_air,
+    "airflow_from_fan": airflow_from_fan,
+    "scaled_input": scaled_input,
+    "duct_static_pressure": duct_static_pressure,
     "vav_flow": vav_flow,
+    "differential_pressure": differential_pressure,
     "zone_temp": zone_temp,
+    "chiller_lwt": chiller_lwt,
+    "chiller_ewt": chiller_ewt,
+    "boiler_water_temp": boiler_water_temp,
     "binary_status_delay": binary_status_delay,
+    "binary_low_trip": binary_low_trip,
 }
 
 
