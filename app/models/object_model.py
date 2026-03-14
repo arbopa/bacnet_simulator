@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -26,6 +26,7 @@ class BehaviorMode(str, Enum):
     LINKED = "linked"
     LOGIC = "logic"
     SCHEDULE = "schedule"
+    RESPONSE = "response"
 
 
 @dataclass
@@ -37,6 +38,12 @@ class BehaviorConfig:
     linked_point_ref: str = ""
     min_value: float = 0.0
     max_value: float = 100.0
+    response_kind: str = ""
+    response_inputs: Dict[str, str] = field(default_factory=dict)
+    response_params: Dict[str, float] = field(default_factory=dict)
+    missing_input_policy: str = "hold"  # hold | skip | fallback
+    fallback_value: float = 0.0
+    max_rate_per_sec: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -47,18 +54,36 @@ class BehaviorConfig:
             "linked_point_ref": self.linked_point_ref,
             "min_value": self.min_value,
             "max_value": self.max_value,
+            "response_kind": self.response_kind,
+            "response_inputs": dict(self.response_inputs),
+            "response_params": dict(self.response_params),
+            "missing_input_policy": self.missing_input_policy,
+            "fallback_value": self.fallback_value,
+            "max_rate_per_sec": self.max_rate_per_sec,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "BehaviorConfig":
+        raw_mode = data.get("mode", BehaviorMode.MANUAL.value)
+        try:
+            mode = BehaviorMode(raw_mode)
+        except Exception:
+            mode = BehaviorMode.MANUAL
+
         return cls(
-            mode=BehaviorMode(data.get("mode", BehaviorMode.MANUAL.value)),
+            mode=mode,
             amplitude=float(data.get("amplitude", 1.0)),
             period_seconds=float(data.get("period_seconds", 120.0)),
             noise=float(data.get("noise", 0.2)),
             linked_point_ref=str(data.get("linked_point_ref", "")),
             min_value=float(data.get("min_value", 0.0)),
             max_value=float(data.get("max_value", 100.0)),
+            response_kind=str(data.get("response_kind", "")),
+            response_inputs=dict(data.get("response_inputs", {})),
+            response_params=dict(data.get("response_params", {})),
+            missing_input_policy=str(data.get("missing_input_policy", "hold")),
+            fallback_value=float(data.get("fallback_value", 0.0)),
+            max_rate_per_sec=float(data.get("max_rate_per_sec", 0.0)),
         )
 
 

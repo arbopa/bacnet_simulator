@@ -120,7 +120,16 @@ class PointRegistry:
             runtime_point.dirty = False
             self.dirty_points.discard(point_ref)
             self._pending_consumers.pop(point_ref, None)
-
+    def mark_dirty(self, point_ref: str) -> bool:
+        with self._lock:
+            runtime_point = self.by_ref.get(point_ref)
+            if runtime_point is None:
+                return False
+            runtime_point.dirty = True
+            self.dirty_points.add(point_ref)
+            if self.active_consumers:
+                self._pending_consumers[point_ref] = set(self.active_consumers)
+            return True
     def mark_all_clean(self) -> None:
         with self._lock:
             point_refs = list(self.dirty_points)

@@ -10,6 +10,9 @@ Desktop building automation simulator for Niagara 4 training and testing.
 ## Features
 
 - Multi-device project model with per-device BACnet identity
+- Device transport modes:
+  - BACnet/IP devices with IP + UDP port
+  - BACnet MS/TP devices with parent IP device + MAC address
 - BACnet object editing for:
   - Device
   - Analog Input / Output / Value
@@ -77,13 +80,12 @@ Or use one-click startup on Windows:
 
 The sample includes:
 
-- 1 AHU
-- 15 VAVs
-- 1 Boiler
-- 1 Chiller
-- 1 Pump panel
-- 3 Generic controllers
-- Total BACnet objects: 195
+- 3 BACnet/IP gateway devices (`JACE-9000-A/B/C`)
+- MS/TP field devices grouped under those gateways:
+  - AHU + 15 VAVs under `JACE-9000-A`
+  - Boiler + Chiller + Pump panel under `JACE-9000-B`
+  - 3 Generic field controllers under `JACE-9000-C`
+- On BACnet/IP, each JACE publishes proxy points for its modeled MS/TP children.
 
 ## Running the Simulator
 
@@ -94,11 +96,28 @@ The sample includes:
    - Modbus/MQTT stubs currently report unavailable.
 4. Use `Pause`, `Resume`, `Stop`, and `Reset` as needed.
 
+## Device Transport Fields
+
+Per device:
+
+- `transport`:
+  - `ip` for BACnet/IP devices
+  - `mstp` for BACnet MS/TP modeled devices
+- `bacnet_ip` and `bacnet_port` are used for `ip` devices
+- `mstp_parent` and `mstp_mac` are used for `mstp` devices
+
+Current behavior:
+
+- Any `ip` device can act as an MS/TP parent/gateway placeholder.
+- `mstp` devices are currently modeled in project/runtime data and validation.
+- Direct BACnet/IP bind is skipped for `mstp` devices in the BACnet server.
+- Parent IP devices expose BACnet proxy points for child MS/TP devices.
+
 ## Niagara 4 Connection Guide
 
 1. In Niagara Workbench, add a BACnet Network under your station.
 2. Ensure Niagara and simulator machine can exchange UDP traffic.
-3. In the simulator project, verify each device UDP port (default base 47808 and incremented per device).
+3. Run Niagara/Workbench/YABE on a different host than the simulator for reliable discovery/import behavior.
 4. In Niagara BACnet network, run `Discover` (Who-Is).
 5. Add discovered devices.
 6. Import points from each device.
@@ -116,11 +135,9 @@ Use the test checklist:
 
 ## Same Machine vs Different Machine
 
-- The simulator does **not** have to run on a different machine than Niagara.
-- You can run both on one machine for quick testing.
-- Running on a separate machine is also fine and often closer to field architecture.
+- Use a separate machine for simulator and Niagara/Workbench/YABE.
+- Single-machine runs are not considered supported for reliable BACnet discovery/import in this project.
 - If on different subnets/VLANs, BACnet discovery may require BBMD/Foreign Device configuration.
-
 ## Architecture
 
 ```text
@@ -171,9 +188,31 @@ bacnet_simulator/
 ## Notes on BACnet/IP Emulation
 
 - BACpypes3 is used for BACnet/IP device/object hosting.
-- Each simulated device has its own device instance and UDP port.
+- Each simulated BACnet/IP device has its own BACnet device instance.
+- The simulator can bind each IP device to its own local IP address, or fall back to a shared bind IP.
+- For larger proxy object lists, segmented responses are enabled to improve client browsing.
 - BACnet manager runs in a dedicated worker thread with an asyncio event loop.
 - Simulation-to-BACnet synchronization is driven by simulation tick notifications through the protocol manager.
+## Network Setup (Alias Safety)
+
+- Network settings let you select the host adapter and enable auto IP alias management.
+- Alias management is add-only:
+  - Does not change DHCP mode
+  - Does not change DNS settings
+  - Only attempts New-NetIPAddress for configured BACnet/IP device addresses
+- Optional cleanup mode removes only aliases created by this app session on exit.
+- On save, the app applies aliases immediately and logs:
+  - requested / created / existing / errors
+- If the selected adapter has no non-manual IPv4, the app warns before applying aliases.
+## Response Behavior
+
+- RESPONSE mode adds system-dynamics behavior (lag/inertia) without emulating controller firmware.
+- `Out Of Service` in Object Editor freezes simulator writes (logic/schedule/response/scenario) for that point so manual testing commands do not get overwritten.
+- Stability controls include:
+  - Clamp by min/max
+  - Optional max rate per second
+  - Missing input policies: hold / skip / fallback
+- Object Editor includes response presets and an Auto-Map button that fills refs using the selected device context.
 
 ## Troubleshooting
 
@@ -186,5 +225,10 @@ pip install bacpypes3
 - If Niagara does not discover devices:
   - check Windows firewall UDP rules
   - confirm subnet/broadcast settings
-  - verify device UDP ports are reachable
+  - if using single-port discovery, verify each IP device alias exists on the simulator host and uses UDP `47808`
+
+
+
+
+
 

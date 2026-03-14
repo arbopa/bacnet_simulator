@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict
 
 from app.models.device_model import DeviceModel
+from app.models.object_model import ObjectModel
 from app.runtime import PointRegistry
 
 from .bacnet_objects import (
     BacnetRuntimePoint,
     create_local_object,
     read_model_value_from_bacnet,
+    read_out_of_service_from_bacnet,
     update_bacnet_object_value,
 )
 
@@ -30,89 +33,147 @@ class BacnetDeviceServer:
         self.bind_ip = bind_ip
         self.registry = registry
         self.devices: Dict[str, BacnetDeviceRuntime] = {}
+        self.source_to_bindings: dict[str, list[tuple[str, str]]] = defaultdict(list)
         self.running = False
+        self._last_sent_to_bacnet: dict[tuple[str, str], object] = {}
+
+    def _device_bind_ip(self, model: DeviceModel) -> str:
+        device_ip = (model.bacnet_ip or "").strip()
+        if device_ip and device_ip != "0.0.0.0":
+            return device_ip
+        return self.bind_ip
+
+    @staticmethod
+    def _is_mstp(model: DeviceModel) -> bool:
+        return (model.transport or "ip").strip().lower() == "mstp"
+
+    @staticmethod
+    def _next_instance(point_type: str, used_by_type: dict[str, set[int]]) -> int:
+        used = used_by_type.setdefault(point_type, set())
+        if not used:
+            used.add(1)
+            return 1
+        nxt = max(used) + 1
+        used.add(nxt)
+        return nxt
+
+    @staticmethod
+    def _is_fallback_object(point: ObjectModel) -> bool:
+        return bool(point.metadata.get("_bacnet_fallback_type"))
+
+    def _add_binding(self, runtime: BacnetDeviceRuntime, key: str, binding: BacnetRuntimePoint) -> None:
+        runtime.points[key] = binding
+        if binding.source_ref:
+            self.source_to_bindings[binding.source_ref].append((runtime.model.name, key))
+
+    def _create_proxy_point(self, child: DeviceModel, source: ObjectModel, used_by_type: dict[str, set[int]]) -> ObjectModel:
+        proxy = ObjectModel.from_dict(source.to_dict())
+        proxy.name = f"{child.name}_{source.name}"
+        proxy.description = f"Proxy of {child.name}.{source.name}"
+        proxy.instance = self._next_instance(proxy.object_type.value, used_by_type)
+        return proxy
+
+    def _values_equal(self, left: object, right: object) -> bool:
+        try:
+            return abs(float(left) - float(right)) <= 1e-6
+        except (TypeError, ValueError):
+            return left == right
+
+    @staticmethod
+    def _binding_cache_key(runtime: BacnetDeviceRuntime, binding_key: str) -> tuple[str, str]:
+        return (runtime.model.name, binding_key)
+
+    def _update_binding_from_source(self, runtime: BacnetDeviceRuntime, binding_key: str, binding: BacnetRuntimePoint) -> None:
+        source = binding.source_point or binding.model_point
+        if source is not binding.model_point:
+            binding.model_point.present_value = source.present_value
+            binding.model_point.out_of_service = bool(source.out_of_service)
+        update_bacnet_object_value(source, binding.bacnet_object)
+        self._last_sent_to_bacnet[self._binding_cache_key(runtime, binding_key)] = source.present_value
 
     async def start(self, device_models: list[DeviceModel]) -> None:
-        from bacpypes3.apdu import APCISequence, ConfirmedRequestPDU
-        from bacpypes3.app import Application as BaseApplication
-        from bacpypes3.errors import UnrecognizedService
         from bacpypes3.ipv4.app import NormalApplication
         from bacpypes3.object import DeviceObject
         from bacpypes3.pdu import IPv4Address
-        from bacpypes3.service.object import (
-            ReadWritePropertyMultipleServices,
-            ReadWritePropertyServices,
-        )
-
-        class SimulatorApplication(NormalApplication):
-            """Explicitly expose RP/RPM handlers + robust generic confirmed decode."""
-
-            async def do_ReadPropertyRequest(self, apdu):
-                logger.debug("RP request %r %r", getattr(apdu, "objectIdentifier", None), getattr(apdu, "propertyIdentifier", None))
-                return await ReadWritePropertyServices.do_ReadPropertyRequest(self, apdu)
-
-            async def do_ReadPropertyMultipleRequest(self, apdu):
-                logger.debug("RPM request")
-                return await ReadWritePropertyMultipleServices.do_ReadPropertyMultipleRequest(self, apdu)
-
-            async def do_ConfirmedRequestPDU(self, apdu):
-                logger.info("Generic ConfirmedRequestPDU service=%s from=%s", getattr(apdu, "apduService", None), getattr(apdu, "pduSource", None))
-                try:
-                    typed_apdu = APCISequence.decode(apdu)
-                    logger.info("Decoded confirmed APDU as %s", typed_apdu.__class__.__name__)
-                except Exception as err:
-                    logger.exception("Failed to decode generic ConfirmedRequestPDU")
-                    raise UnrecognizedService(str(err))
-
-                helper_name = "do_" + typed_apdu.__class__.__name__
-                helper_fn = getattr(self, helper_name, None)
-                logger.info("Dispatch helper=%s exists=%s", helper_name, bool(helper_fn))
-                if not helper_fn:
-                    raise UnrecognizedService(f"no function {helper_name}")
-                return await helper_fn(typed_apdu)
-
-            async def indication(self, apdu):
-                logger.info(
-                    "Inbound APDU class=%s service=%s src=%s",
-                    apdu.__class__.__name__,
-                    getattr(apdu, "apduService", None),
-                    getattr(apdu, "pduSource", None),
-                )
-                # Defensive override: if service pipeline leaves APDU generic,
-                # force decode and dispatch before base reject path.
-                if isinstance(apdu, ConfirmedRequestPDU) and (apdu.__class__.__name__ == "ConfirmedRequestPDU"):
-                    try:
-                        return await self.do_ConfirmedRequestPDU(apdu)
-                    except Exception:
-                        logger.exception("Forced generic confirmed dispatch failed")
-                        # fall through to base handler for canonical error response
-                return await BaseApplication.indication(self, apdu)
 
         self.devices.clear()
-        for model in device_models:
-            if not model.enabled:
-                continue
+        self.source_to_bindings.clear()
+        self._last_sent_to_bacnet.clear()
 
+        ip_devices = [d for d in device_models if d.enabled and not self._is_mstp(d)]
+        mstp_devices = [d for d in device_models if d.enabled and self._is_mstp(d)]
+
+        mstp_by_parent: dict[str, list[DeviceModel]] = defaultdict(list)
+        for child in mstp_devices:
+            mstp_by_parent[(child.mstp_parent or "").strip()].append(child)
+
+        for model in ip_devices:
             device_object = DeviceObject(
                 objectIdentifier=("device", int(model.device_instance)),
                 objectName=model.name,
                 description=model.description,
                 vendorIdentifier=int(model.vendor_id),
-                maxApduLengthAccepted=1024,
-                segmentationSupported="noSegmentation",
-                maxSegmentsAccepted=16,
+                maxApduLengthAccepted=1476,
+                segmentationSupported="segmentedBoth",
+                maxSegmentsAccepted=64,
             )
 
-            local_addr = IPv4Address(f"{self.bind_ip}:{model.bacnet_port}")
-            app = SimulatorApplication(device_object, local_addr)
+            bind_ip = self._device_bind_ip(model)
+            local_addr = IPv4Address(f"{bind_ip}:{model.bacnet_port}")
+            app = NormalApplication(device_object, local_addr)
             runtime = BacnetDeviceRuntime(model=model, application=app)
 
+            used_by_type: dict[str, set[int]] = defaultdict(set)
+
             for point in model.objects:
+                used_by_type[point.object_type.value].add(int(point.instance))
                 bacnet_obj = create_local_object(point)
                 if bacnet_obj is None:
                     continue
+                if self._is_fallback_object(point):
+                    logger.info(
+                        "Skipping BACnet fallback object for %s.%s (%s)",
+                        model.name,
+                        point.name,
+                        point.metadata.get("_bacnet_fallback_type"),
+                    )
+                    continue
                 app.add_object(bacnet_obj)
-                runtime.points[point.name] = BacnetRuntimePoint(model_point=point, bacnet_object=bacnet_obj)
+                source_ref = f"{model.name}.{point.name}"
+                self._add_binding(
+                    runtime,
+                    point.name,
+                    BacnetRuntimePoint(model_point=point, bacnet_object=bacnet_obj, source_point=point, source_ref=source_ref),
+                )
+
+            children = sorted(mstp_by_parent.get(model.name, []), key=lambda d: int(d.mstp_mac or 9999))
+            for child in children:
+                for child_point in child.objects:
+                    proxy_point = self._create_proxy_point(child, child_point, used_by_type)
+                    bacnet_obj = create_local_object(proxy_point)
+                    if bacnet_obj is None:
+                        continue
+                    if self._is_fallback_object(proxy_point):
+                        logger.info(
+                            "Skipping proxy fallback object for %s.%s (%s)",
+                            child.name,
+                            child_point.name,
+                            proxy_point.metadata.get("_bacnet_fallback_type"),
+                        )
+                        continue
+                    app.add_object(bacnet_obj)
+                    binding_key = proxy_point.name
+                    source_ref = f"{child.name}.{child_point.name}"
+                    self._add_binding(
+                        runtime,
+                        binding_key,
+                        BacnetRuntimePoint(
+                            model_point=proxy_point,
+                            bacnet_object=bacnet_obj,
+                            source_point=child_point,
+                            source_ref=source_ref,
+                        ),
+                    )
 
             try:
                 device_object.objectList = [obj.objectIdentifier for obj in app.iter_objects()]
@@ -120,14 +181,21 @@ class BacnetDeviceServer:
                 logger.exception("Failed to populate objectList for %s", model.name)
 
             logger.info(
-                "BACnet device online: %s on %s:%s (RP=%s RPM=%s)",
+                "BACnet device online: %s on %s:%s (objects=%s)",
                 model.name,
-                self.bind_ip,
+                bind_ip,
                 model.bacnet_port,
-                hasattr(app, "do_ReadPropertyRequest"),
-                hasattr(app, "do_ReadPropertyMultipleRequest"),
+                len(runtime.points),
             )
             self.devices[model.name] = runtime
+
+        for model in mstp_devices:
+            logger.info(
+                "MS/TP modeled device %s proxied under parent %s (mac=%s)",
+                model.name,
+                model.mstp_parent,
+                model.mstp_mac,
+            )
 
         self.running = True
 
@@ -141,6 +209,8 @@ class BacnetDeviceServer:
                     logger.exception("Error closing BACnet application for %s", runtime.model.name)
         self.running = False
         self.devices.clear()
+        self.source_to_bindings.clear()
+        self._last_sent_to_bacnet.clear()
 
     async def sync_from_model(self) -> None:
         if not self.running:
@@ -148,55 +218,63 @@ class BacnetDeviceServer:
 
         if self.registry is None:
             for runtime in self.devices.values():
-                for point_name, binding in runtime.points.items():
-                    point = runtime.model.get_object(point_name)
-                    if point is None:
-                        continue
-                    update_bacnet_object_value(point, binding.bacnet_object)
+                for binding_key, binding in runtime.points.items():
+                    self._update_binding_from_source(runtime, binding_key, binding)
             return
 
         for point_ref in self.registry.claim_dirty_for("bacnet"):
-            try:
-                device_name, point_name = point_ref.split(".", 1)
-            except ValueError:
+            mappings = self.source_to_bindings.get(point_ref, [])
+            if not mappings:
                 self.registry.mark_consumed("bacnet", point_ref)
                 continue
 
-            runtime = self.devices.get(device_name)
-            if runtime is None:
-                self.registry.mark_consumed("bacnet", point_ref)
-                continue
+            for runtime_name, binding_key in mappings:
+                runtime = self.devices.get(runtime_name)
+                if runtime is None:
+                    continue
+                binding = runtime.points.get(binding_key)
+                if binding is None:
+                    continue
+                self._update_binding_from_source(runtime, binding_key, binding)
 
-            binding = runtime.points.get(point_name)
-            if binding is None:
-                self.registry.mark_consumed("bacnet", point_ref)
-                continue
-
-            runtime_point = self.registry.get(point_ref)
-            if runtime_point is None:
-                self.registry.mark_consumed("bacnet", point_ref)
-                continue
-
-            update_bacnet_object_value(runtime_point.model_point, binding.bacnet_object)
             self.registry.mark_consumed("bacnet", point_ref)
 
     async def sync_to_model(self) -> None:
         if not self.running:
             return
+
         for runtime in self.devices.values():
-            for point_name, binding in runtime.points.items():
-                point = runtime.model.get_object(point_name)
-                if point is None or not point.writable:
+            for binding_key, binding in runtime.points.items():
+                source = binding.source_point or binding.model_point
+                if source is None:
                     continue
                 try:
-                    value = read_model_value_from_bacnet(point, binding.bacnet_object)
-                    if self.registry is not None:
-                        point_ref = f"{runtime.model.name}.{point_name}"
-                        if self.registry.set_value(point_ref, value, mark_dirty=False):
-                            continue
-                    point.present_value = value
+                    cache_key = self._binding_cache_key(runtime, binding_key)
+                    oos_value = read_out_of_service_from_bacnet(binding.model_point, binding.bacnet_object)
+                    oos_changed = bool(source.out_of_service) != bool(oos_value)
+                    if oos_changed:
+                        source.out_of_service = bool(oos_value)
+                        if binding.model_point is not source:
+                            binding.model_point.out_of_service = bool(oos_value)
+
+                    value_changed = False
+                    if source.writable:
+                        value = read_model_value_from_bacnet(binding.model_point, binding.bacnet_object)
+                        last_sent = self._last_sent_to_bacnet.get(cache_key)
+                        if last_sent is None or not self._values_equal(value, last_sent):
+                            source.present_value = value
+                            if binding.model_point is not source:
+                                binding.model_point.present_value = value
+                            self._last_sent_to_bacnet[cache_key] = value
+                            value_changed = True
+
+                    if self.registry is not None and binding.source_ref:
+                        if value_changed:
+                            self.registry.set_value(binding.source_ref, source.present_value, mark_dirty=False)
+                        elif oos_changed:
+                            self.registry.mark_dirty(binding.source_ref)
                 except Exception:
-                    logger.exception("Failed syncing writable point %s.%s", runtime.model.name, point_name)
+                    logger.exception("Failed syncing writable point %s", binding.source_ref or binding.model_point.name)
 
     async def loop_forever(self, tick_event: asyncio.Event, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -207,4 +285,3 @@ class BacnetDeviceServer:
                 tick_event.clear()
             except asyncio.TimeoutError:
                 pass
-

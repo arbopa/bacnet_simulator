@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -13,8 +13,11 @@ class DeviceModel:
     vendor_id: int = 999
     description: str = ""
     enabled: bool = True
+    transport: str = "ip"
     bacnet_ip: str = "0.0.0.0"
     bacnet_port: int = 47808
+    mstp_parent: str = ""
+    mstp_mac: int | None = None
     objects: List[ObjectModel] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -24,8 +27,11 @@ class DeviceModel:
             "vendor_id": self.vendor_id,
             "description": self.description,
             "enabled": self.enabled,
+            "transport": self.transport,
             "bacnet_ip": self.bacnet_ip,
             "bacnet_port": self.bacnet_port,
+            "mstp_parent": self.mstp_parent,
+            "mstp_mac": self.mstp_mac,
             "objects": [obj.to_dict() for obj in self.objects],
         }
 
@@ -37,8 +43,11 @@ class DeviceModel:
             vendor_id=int(data.get("vendor_id", 999)),
             description=str(data.get("description", "")),
             enabled=bool(data.get("enabled", True)),
+            transport=str(data.get("transport", "ip")),
             bacnet_ip=str(data.get("bacnet_ip", "0.0.0.0")),
             bacnet_port=int(data.get("bacnet_port", 47808)),
+            mstp_parent=str(data.get("mstp_parent", "")),
+            mstp_mac=(None if data.get("mstp_mac", None) is None else int(data.get("mstp_mac"))),
             objects=[ObjectModel.from_dict(raw) for raw in data.get("objects", [])],
         )
 

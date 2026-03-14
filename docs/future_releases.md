@@ -1,4 +1,4 @@
-# Future Releases Backlog
+﻿# Future Releases Backlog
 
 ## Architecture / Runtime
 
@@ -19,6 +19,13 @@
   - Write/control subscription topics
 - Keep protocol mappings independent from simulation model classes.
 
+## BACnet / MS/TP Expansion
+
+- Add explicit BACnet router/remote-network objects (network numbers + routed network metadata).
+- Model per-parent MS/TP trunk status (online/offline, token timing, fault injection).
+- Add optional child-device discovery emulation semantics for MS/TP behind a router.
+- Expand BACnet tests for mixed IP + MS/TP modeled topologies.
+
 ## BACnet Improvements
 
 - Add optional COV-first push path backed by runtime registry changes.
@@ -31,10 +38,12 @@
   - Bind IP selection
   - Base UDP port
   - Optional per-device network overrides
-- Add explicit "single-host Niagara mode" wizard for local testing setup guidance.
+- Add a guided network diagnostics wizard for multi-host Niagara testing (adapter, routing, firewall checks).
 - Explore optional multi-IP alias support (where OS/network adapter supports additional local IP bindings).
 
 ## Usability
 
 - Add startup environment diagnostics panel (Python version, BACpypes3 status, port checks).
 - Add connection-profile presets (Local Lab, Same Subnet, Routed/BBMD).
+
+

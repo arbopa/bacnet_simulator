@@ -1,8 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -30,8 +31,20 @@ class DeviceEditor(QWidget):
         self.vendor_spin = QSpinBox()
         self.vendor_spin.setMaximum(65_535)
         self.description_edit = QLineEdit()
+
+        self.transport_combo = QComboBox()
+        self.transport_combo.addItem("BACnet/IP", "ip")
+        self.transport_combo.addItem("BACnet MS/TP", "mstp")
+        self.transport_combo.currentIndexChanged.connect(self._apply_transport_mode)
+
+        self.ip_edit = QLineEdit()
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1, 65535)
+        self.mstp_parent_edit = QLineEdit()
+        self.mstp_parent_edit.setPlaceholderText("Parent IP device name")
+        self.mstp_mac_spin = QSpinBox()
+        self.mstp_mac_spin.setRange(0, 127)
+
         self.enabled_check = QCheckBox("Enabled")
         self.object_count_label = QLabel("0")
         self.online_label = QLabel("Offline")
@@ -41,7 +54,11 @@ class DeviceEditor(QWidget):
         form.addRow("Device Instance", self.instance_spin)
         form.addRow("Vendor ID", self.vendor_spin)
         form.addRow("Description", self.description_edit)
+        form.addRow("Transport", self.transport_combo)
+        form.addRow("BACnet IP", self.ip_edit)
         form.addRow("UDP Port", self.port_spin)
+        form.addRow("MS/TP Parent", self.mstp_parent_edit)
+        form.addRow("MS/TP MAC", self.mstp_mac_spin)
         form.addRow("Object Count", self.object_count_label)
         form.addRow("BACnet Status", self.online_label)
         form.addRow("", self.enabled_check)
@@ -59,6 +76,15 @@ class DeviceEditor(QWidget):
         row.addStretch(1)
         layout.addLayout(row)
 
+        self._apply_transport_mode()
+
+    def _apply_transport_mode(self) -> None:
+        is_ip = self.transport_combo.currentData() == "ip"
+        self.ip_edit.setEnabled(is_ip)
+        self.port_spin.setEnabled(is_ip)
+        self.mstp_parent_edit.setEnabled(not is_ip)
+        self.mstp_mac_spin.setEnabled(not is_ip)
+
     def set_online(self, online: bool) -> None:
         self.online_label.setText("Online" if online else "Offline")
 
@@ -70,7 +96,11 @@ class DeviceEditor(QWidget):
             self.instance_spin,
             self.vendor_spin,
             self.description_edit,
+            self.transport_combo,
+            self.ip_edit,
             self.port_spin,
+            self.mstp_parent_edit,
+            self.mstp_mac_spin,
             self.enabled_check,
         ]:
             widget.setEnabled(enabled)
@@ -83,9 +113,21 @@ class DeviceEditor(QWidget):
         self.instance_spin.setValue(device.device_instance)
         self.vendor_spin.setValue(device.vendor_id)
         self.description_edit.setText(device.description)
+
+        transport = (device.transport or "ip").lower()
+        if transport == "mstp":
+            self.transport_combo.setCurrentIndex(1)
+        else:
+            self.transport_combo.setCurrentIndex(0)
+
+        self.ip_edit.setText(device.bacnet_ip)
         self.port_spin.setValue(device.bacnet_port)
+        self.mstp_parent_edit.setText(device.mstp_parent)
+        self.mstp_mac_spin.setValue(1 if device.mstp_mac is None else int(device.mstp_mac))
+
         self.enabled_check.setChecked(device.enabled)
         self.object_count_label.setText(str(device.object_count))
+        self._apply_transport_mode()
 
     def _save(self) -> None:
         if not self._device:
@@ -94,6 +136,18 @@ class DeviceEditor(QWidget):
         self._device.device_instance = self.instance_spin.value()
         self._device.vendor_id = self.vendor_spin.value()
         self._device.description = self.description_edit.text().strip()
+
+        transport = str(self.transport_combo.currentData() or "ip")
+        self._device.transport = transport
+        if transport == "ip":
+            self._device.bacnet_ip = self.ip_edit.text().strip() or "0.0.0.0"
+            self._device.mstp_parent = ""
+            self._device.mstp_mac = None
+        else:
+            self._device.bacnet_ip = ""
+            self._device.mstp_parent = self.mstp_parent_edit.text().strip()
+            self._device.mstp_mac = self.mstp_mac_spin.value()
+
         self._device.bacnet_port = self.port_spin.value()
         self._device.enabled = self.enabled_check.isChecked()
         self.saved.emit()

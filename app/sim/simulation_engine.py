@@ -7,11 +7,12 @@ from typing import Deque, Dict, List, Tuple
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from app.models.object_model import BehaviorMode, ObjectType
+from app.models.object_model import BehaviorMode, ObjectModel, ObjectType
 from app.models.project_model import ProjectModel
 from app.runtime import PointRegistry, RuntimePoint
 from app.sim.behaviors import BehaviorContext, apply_behavior
 from app.sim.logic_engine import LogicEngine
+from app.sim.response_engine import compute_response
 from app.sim.scenarios import apply_scenario
 from app.sim.schedule_engine import schedule_value
 
@@ -100,6 +101,76 @@ class SimulationEngine(QObject):
                 self.registry.set_value(point.object_ref(device.name), point.initial_value, sync_model=False)
         self.message.emit("All point values reset to initial values.")
 
+    @staticmethod
+    def _safe_float(value, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _clamp(value: float, min_value: float, max_value: float) -> float:
+        if max_value < min_value:
+            min_value, max_value = max_value, min_value
+        return max(min_value, min(max_value, value))
+
+    def _resolve_point_value(self, point_ref: str) -> float | None:
+        if self._project is None:
+            return None
+        source = self._project.get_point_by_ref(point_ref)
+        if source is None:
+            return None
+        try:
+            return float(source.present_value)
+        except (TypeError, ValueError):
+            return None
+
+    def _evaluate_response(self, point: ObjectModel, elapsed_seconds: float) -> float | None:
+        behavior = point.behavior
+        current = self._safe_float(point.present_value, self._safe_float(point.initial_value, 0.0))
+
+        inputs: dict[str, float] = {}
+        missing = False
+        for key, ref in behavior.response_inputs.items():
+            ref_name = str(ref).strip()
+            if not ref_name:
+                continue
+            value = self._resolve_point_value(ref_name)
+            if value is None:
+                missing = True
+                continue
+            inputs[str(key)] = value
+
+        policy = (behavior.missing_input_policy or "hold").strip().lower()
+        if missing:
+            if policy in {"hold", "skip"}:
+                return None
+            if policy == "fallback":
+                next_value = self._safe_float(behavior.fallback_value, current)
+            else:
+                return None
+        else:
+            next_value = compute_response(
+                kind=behavior.response_kind,
+                current=current,
+                inputs=inputs,
+                params=behavior.response_params,
+                dt=elapsed_seconds,
+            )
+
+        next_value = self._clamp(next_value, behavior.min_value, behavior.max_value)
+
+        max_rate = max(0.0, self._safe_float(behavior.max_rate_per_sec, 0.0))
+        if max_rate > 0.0:
+            max_step = max_rate * max(0.0, elapsed_seconds)
+            delta = next_value - current
+            if delta > max_step:
+                next_value = current + max_step
+            elif delta < -max_step:
+                next_value = current - max_step
+
+        return next_value
+
     def _tick(self) -> None:
         if not self._running or self._paused or self._project is None:
             return
@@ -122,10 +193,21 @@ class SimulationEngine(QObject):
 
         snapshot: Dict[str, float] = {}
 
-        # 2) Evaluate point behaviors and linked values.
+        # 2) Evaluate point behaviors and response dynamics.
         for device in self._project.devices:
             for point in device.objects:
                 if point.object_type in {ObjectType.SCHEDULE, ObjectType.TREND_LOG}:
+                    continue
+
+                if point.out_of_service:
+                    ref = point.object_ref(device.name)
+                    self.registry.set_value(ref, point.present_value)
+                    try:
+                        numeric = float(point.present_value)
+                        self.trends[ref].append((now_real, numeric))
+                        snapshot[ref] = numeric
+                    except (TypeError, ValueError):
+                        pass
                     continue
 
                 linked_value = None
@@ -141,9 +223,12 @@ class SimulationEngine(QObject):
                         if schedule_obj is not None:
                             point.present_value = schedule_obj.present_value
                     else:
-                        # local embedded schedule when no separate schedule object is linked
                         synthetic = schedule_value(point, now_dt)
                         point.present_value = synthetic
+                elif point.behavior.mode == BehaviorMode.RESPONSE:
+                    evaluated = self._evaluate_response(point, elapsed)
+                    if evaluated is not None:
+                        point.present_value = evaluated
                 else:
                     point.present_value = apply_behavior(point, linked_value, context)
 
@@ -191,4 +276,3 @@ class SimulationEngine(QObject):
         if last_n <= 0:
             return list(samples)
         return list(samples)[-last_n:]
-

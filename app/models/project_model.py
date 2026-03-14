@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -12,12 +12,20 @@ class BacnetSettings:
     network_name: str = "SimNetwork"
     bind_ip: str = "0.0.0.0"
     base_udp_port: int = 47808
+    interface_alias: str = ""
+    auto_manage_ip_aliases: bool = False
+    alias_prefix_length: int = 24
+    remove_auto_aliases_on_exit: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "network_name": self.network_name,
             "bind_ip": self.bind_ip,
             "base_udp_port": self.base_udp_port,
+            "interface_alias": self.interface_alias,
+            "auto_manage_ip_aliases": self.auto_manage_ip_aliases,
+            "alias_prefix_length": self.alias_prefix_length,
+            "remove_auto_aliases_on_exit": self.remove_auto_aliases_on_exit,
         }
 
     @classmethod
@@ -26,6 +34,10 @@ class BacnetSettings:
             network_name=str(data.get("network_name", "SimNetwork")),
             bind_ip=str(data.get("bind_ip", "0.0.0.0")),
             base_udp_port=int(data.get("base_udp_port", 47808)),
+            interface_alias=str(data.get("interface_alias", "")),
+            auto_manage_ip_aliases=bool(data.get("auto_manage_ip_aliases", False)),
+            alias_prefix_length=int(data.get("alias_prefix_length", 24)),
+            remove_auto_aliases_on_exit=bool(data.get("remove_auto_aliases_on_exit", False)),
         )
 
 

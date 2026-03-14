@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Optional
 
@@ -29,6 +29,7 @@ class MainWindow(QMainWindow):
     open_project_requested = Signal()
     save_project_requested = Signal()
     save_as_project_requested = Signal()
+    network_setup_requested = Signal()
     start_sim_requested = Signal()
     stop_sim_requested = Signal()
     pause_sim_requested = Signal()
@@ -45,6 +46,10 @@ class MainWindow(QMainWindow):
         self.object_editor = ObjectEditor()
         self.live_table = QTableWidget(0, 4)
         self.live_table.setHorizontalHeaderLabels(["Point", "Value", "Writable", "Behavior"])
+        self.live_table.setColumnWidth(0, 280)
+        self.live_table.setColumnWidth(1, 90)
+        self.live_table.setColumnWidth(2, 95)
+        self.live_table.setColumnWidth(3, 120)
         self.trend_view = TrendView()
         self.log_panel = LogPanel()
         self.status = QStatusBar()
@@ -61,6 +66,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction("Open", self.open_project_requested.emit)
         toolbar.addAction("Save", self.save_project_requested.emit)
         toolbar.addAction("Save As", self.save_as_project_requested.emit)
+        toolbar.addAction("Network", self.network_setup_requested.emit)
         toolbar.addSeparator()
         toolbar.addAction("Start", self.start_sim_requested.emit)
         toolbar.addAction("Stop", self.stop_sim_requested.emit)
@@ -70,15 +76,19 @@ class MainWindow(QMainWindow):
 
     def _build_layout(self) -> None:
         left_panel = QWidget()
+        left_panel.setMinimumWidth(430)
         left_layout = QVBoxLayout(left_panel)
         left_layout.addWidget(self.project_tree)
 
         editor_panel = QWidget()
+        editor_panel.setMaximumWidth(500)
         editor_layout = QVBoxLayout(editor_panel)
         editor_layout.addWidget(self.device_editor)
         editor_layout.addWidget(self.object_editor)
 
         right_panel = QWidget()
+        right_panel.setMinimumWidth(540)
+        right_panel.setMaximumWidth(620)
         right_layout = QVBoxLayout(right_panel)
         right_layout.addWidget(QLabel("Live Values"))
         right_layout.addWidget(self.live_table)
@@ -89,8 +99,8 @@ class MainWindow(QMainWindow):
         top_splitter.addWidget(left_panel)
         top_splitter.addWidget(editor_panel)
         top_splitter.addWidget(right_panel)
-        top_splitter.setStretchFactor(0, 2)
-        top_splitter.setStretchFactor(1, 3)
+        top_splitter.setStretchFactor(0, 6)
+        top_splitter.setStretchFactor(1, 4)
         top_splitter.setStretchFactor(2, 4)
 
         bottom_panel = QWidget()

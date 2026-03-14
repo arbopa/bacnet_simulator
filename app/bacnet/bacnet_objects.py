@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -11,10 +11,11 @@ from app.models.object_model import ObjectModel, ObjectType
 class BacnetRuntimePoint:
     model_point: ObjectModel
     bacnet_object: Any
+    source_point: ObjectModel | None = None
+    source_ref: str = ""
 
 
 def make_device_args(bind_ip: str, udp_port: int, device_name: str, device_instance: int, vendor_id: int):
-    # Application.from_args expects argparse-style lowercase names.
     return SimpleNamespace(
         name=device_name,
         instance=int(device_instance),
@@ -28,7 +29,6 @@ def make_device_args(bind_ip: str, udp_port: int, device_name: str, device_insta
 
 
 def _create_special_object(point: ObjectModel):
-    # Best-effort native Schedule/TrendLog object construction for BACpypes3.
     from bacpypes3.local.object import Object as LocalObject
     from bacpypes3.object import ScheduleObject, TrendLogObject
     from bacpypes3.primitivedata import CharacterString
@@ -59,6 +59,16 @@ def _create_special_object(point: ObjectModel):
     return None
 
 
+def _fallback_analog_value_instance(point: ObjectModel) -> int:
+    # Keep fallback AV instances in a high range to avoid collisions with normal AVs.
+    if point.object_type == ObjectType.SCHEDULE:
+        base = 3_000_000
+    else:
+        base = 3_500_000
+    value = base + (int(point.instance) % 500_000)
+    return min(4_194_302, value)
+
+
 def create_local_object(point: ObjectModel):
     from bacpypes3.local.analog import AnalogInputObject, AnalogOutputObject, AnalogValueObject
     from bacpypes3.local.binary import BinaryInputObject, BinaryOutputObject, BinaryValueObject
@@ -71,15 +81,16 @@ def create_local_object(point: ObjectModel):
             if special is not None:
                 return special
         except Exception:
-            # Fallback object when runtime/library cannot instantiate special class.
+            fallback_instance = _fallback_analog_value_instance(point)
             fallback = AnalogValueObject(
-                objectIdentifier=("analogValue", point.instance),
+                objectIdentifier=("analogValue", fallback_instance),
                 objectName=CharacterString(f"{point.name}_fallback"),
                 description=CharacterString(f"Fallback for {point.object_type.value}"),
                 presentValue=Real(float(point.present_value)),
                 outOfService=point.out_of_service,
             )
             point.metadata["_bacnet_fallback_type"] = point.object_type.value
+            point.metadata["_bacnet_fallback_instance"] = fallback_instance
             return fallback
 
     kwargs = {
@@ -125,6 +136,9 @@ def create_local_object(point: ObjectModel):
 
 
 def update_bacnet_object_value(point: ObjectModel, obj: Any) -> None:
+    if hasattr(obj, "outOfService"):
+        obj.outOfService = bool(point.out_of_service)
+
     if point.object_type in {
         ObjectType.BINARY_INPUT,
         ObjectType.BINARY_OUTPUT,
@@ -158,3 +172,7 @@ def read_model_value_from_bacnet(point: ObjectModel, obj: Any):
     if point.object_type == ObjectType.MULTI_STATE_VALUE:
         return int(raw)
     return float(raw)
+
+
+def read_out_of_service_from_bacnet(point: ObjectModel, obj: Any) -> bool:
+    return bool(getattr(obj, "outOfService", point.out_of_service))

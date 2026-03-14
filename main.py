@@ -3,9 +3,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QDialog
 
-from app.gui.dialogs import AddDeviceDialog, AddObjectDialog
+from app.gui.dialogs import AddDeviceDialog, AddObjectDialog, NetworkSetupDialog
 from app.gui.main_window import MainWindow
 from app.models.object_model import BehaviorConfig, BehaviorMode, ObjectModel, ObjectType, ScheduleConfig
 from app.models.project_model import ProjectModel
@@ -13,6 +13,7 @@ from app.models.template_defs import build_template
 from app.protocol import BacnetProtocolAdapter, ModbusProtocolAdapter, MqttProtocolAdapter, ProtocolManager
 from app.sim.simulation_engine import SimulationEngine
 from app.storage.project_io import load_project, save_project
+from app.utils.ip_alias_manager import IPAliasManager
 from app.utils.logging_setup import configure_logging
 from app.utils.validators import validate_project
 
@@ -30,6 +31,7 @@ class AppController:
         self.current_path: Path | None = None
         self.selected_device_name: str | None = None
         self.selected_object_name: str | None = None
+        self._session_created_aliases: dict[str, set[str]] = {}
 
         self._connect_signals()
         self._set_project(self.project)
@@ -39,6 +41,7 @@ class AppController:
         self.window.open_project_requested.connect(self.open_project)
         self.window.save_project_requested.connect(self.save_project)
         self.window.save_as_project_requested.connect(self.save_project_as)
+        self.window.network_setup_requested.connect(self.configure_network)
 
         self.window.start_sim_requested.connect(self.start_simulation)
         self.window.stop_sim_requested.connect(self.stop_simulation)
@@ -72,6 +75,7 @@ class AppController:
         self.protocols.set_registry(self.sim.registry)
         self.window.set_project(self.project)
         self.window.device_editor.set_device(None)
+        self.window.object_editor.set_device_context("", [])
         self.window.object_editor.set_object(None)
 
     def show(self) -> None:
@@ -80,6 +84,15 @@ class AppController:
     def _refresh_runtime_registry(self) -> None:
         self.sim.rebuild_runtime_registry()
         self.protocols.set_registry(self.sim.registry)
+
+    def _persist_project_if_loaded(self, reason: str) -> None:
+        if self.current_path is None:
+            return
+        try:
+            save_project(self.project, self.current_path)
+            self.window.log(f"Project auto-saved ({reason}): {self.current_path}")
+        except Exception as err:
+            self.window.log(f"Project auto-save failed ({reason}): {err}")
 
     def new_project(self) -> None:
         self.stop_simulation()
@@ -127,11 +140,136 @@ class AppController:
         self.current_path = Path(selected)
         self.save_project()
 
+    def _target_ip_aliases(self) -> list[str]:
+        return sorted(
+            {
+                (device.bacnet_ip or "").strip()
+                for device in self.project.devices
+                if (device.transport or "ip").strip().lower() == "ip"
+                and (device.bacnet_ip or "").strip()
+                and (device.bacnet_ip or "").strip() != "0.0.0.0"
+            }
+        )
+
+    def _remember_created_aliases(self, adapter: str, created_ips: list[str]) -> None:
+        if not created_ips:
+            return
+        alias_set = self._session_created_aliases.setdefault(adapter, set())
+        alias_set.update(created_ips)
+
+    def _apply_ip_aliases(self, *, show_dialog: bool) -> bool:
+        settings = self.project.bacnet
+        if not settings.auto_manage_ip_aliases:
+            return True
+
+        adapter = (settings.interface_alias or "").strip()
+        if not adapter:
+            msg = "[network] Auto-manage IP aliases is enabled, but no adapter is selected."
+            self.window.log(msg)
+            if show_dialog:
+                QMessageBox.warning(self.window, "Network Setup", msg)
+            return False
+
+        if not IPAliasManager.has_non_manual_ipv4(adapter):
+            msg = (
+                f"[network] Adapter '{adapter}' has no non-manual IPv4 address. "
+                "Alias application can disrupt normal connectivity."
+            )
+            self.window.log(msg)
+            if show_dialog:
+                QMessageBox.warning(self.window, "Network Setup Warning", msg)
+
+        ips = self._target_ip_aliases()
+        if not ips:
+            msg = "[network] No explicit BACnet/IP device aliases to apply."
+            self.window.log(msg)
+            if show_dialog:
+                QMessageBox.information(self.window, "Network Setup", msg)
+            return True
+
+        result = IPAliasManager.ensure_ip_aliases(adapter, ips, prefix_length=settings.alias_prefix_length)
+        self._remember_created_aliases(adapter, result.created_ips)
+
+        summary = (
+            f"[network] Alias apply complete on '{adapter}': requested={len(result.requested_ips)} "
+            f"created={len(result.created_ips)} existing={len(result.existing_ips)} errors={len(result.errors)}"
+        )
+        self.window.log(summary)
+        for err in result.errors:
+            self.window.log(f"[network] {err}")
+
+        if show_dialog:
+            details = [summary]
+            if result.created_ips:
+                details.append(f"Created: {', '.join(result.created_ips)}")
+            if result.errors:
+                details.append("Errors:")
+                details.extend(result.errors[:8])
+            QMessageBox.information(self.window, "Network Setup", "\n".join(details))
+
+        return len(result.errors) == 0
+
+    def _cleanup_created_aliases_on_exit(self) -> None:
+        settings = self.project.bacnet
+        if not settings.remove_auto_aliases_on_exit:
+            return
+
+        for adapter, aliases in list(self._session_created_aliases.items()):
+            if not aliases:
+                continue
+            remove_result = IPAliasManager.remove_ip_aliases(adapter, sorted(aliases))
+            self.window.log(
+                f"[network] Alias cleanup on '{adapter}': requested={len(remove_result.requested_ips)} "
+                f"removed={len(remove_result.removed_ips)} missing={len(remove_result.missing_ips)} "
+                f"errors={len(remove_result.errors)}"
+            )
+            for err in remove_result.errors:
+                self.window.log(f"[network] cleanup error: {err}")
+
+        self._session_created_aliases.clear()
+
+    def on_app_about_to_quit(self) -> None:
+        self.stop_simulation()
+        self._cleanup_created_aliases_on_exit()
+
+    def configure_network(self) -> None:
+        adapters = IPAliasManager.list_adapters()
+        dialog = NetworkSetupDialog(
+            adapter_names=adapters,
+            current_adapter=self.project.bacnet.interface_alias,
+            auto_manage_aliases=self.project.bacnet.auto_manage_ip_aliases,
+            alias_prefix_length=self.project.bacnet.alias_prefix_length,
+            remove_aliases_on_exit=self.project.bacnet.remove_auto_aliases_on_exit,
+            parent=self.window,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        data = dialog.result_data()
+        if not data:
+            return
+
+        self.project.bacnet.interface_alias = data["interface_alias"]
+        self.project.bacnet.auto_manage_ip_aliases = bool(data["auto_manage_ip_aliases"])
+        self.project.bacnet.alias_prefix_length = int(data["alias_prefix_length"])
+        self.project.bacnet.remove_auto_aliases_on_exit = bool(data["remove_auto_aliases_on_exit"])
+
+        mode = "enabled" if self.project.bacnet.auto_manage_ip_aliases else "disabled"
+        cleanup_mode = "enabled" if self.project.bacnet.remove_auto_aliases_on_exit else "disabled"
+        adapter = self.project.bacnet.interface_alias or "<none>"
+        self.window.log(
+            f"Network setup saved: auto alias {mode}, cleanup-on-exit {cleanup_mode}, "
+            f"adapter={adapter}, /{self.project.bacnet.alias_prefix_length}."
+        )
+        self._persist_project_if_loaded("network settings")
+
+        if self.project.bacnet.auto_manage_ip_aliases:
+            self._apply_ip_aliases(show_dialog=True)
+
     def add_device(self) -> None:
         default_instance = 1000 + len(self.project.devices)
         default_port = self.project.bacnet.base_udp_port + len(self.project.devices)
         dialog = AddDeviceDialog(default_instance=default_instance, default_port=default_port, parent=self.window)
-        if dialog.exec() != dialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         data = dialog.result_data()
         if not data:
@@ -142,6 +280,10 @@ class AppController:
             data["name"],
             data["instance"],
             data["port"],
+            data["ip"],
+            transport=data["transport"],
+            mstp_parent=data["mstp_parent"],
+            mstp_mac=data["mstp_mac"],
         )
         self.project.devices.append(device)
         self._refresh_runtime_registry()
@@ -154,7 +296,7 @@ class AppController:
             return
         next_instance = max([obj.instance for obj in device.objects] + [0]) + 1
         dialog = AddObjectDialog(next_instance=next_instance, parent=self.window)
-        if dialog.exec() != dialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         data = dialog.result_data()
         if not data:
@@ -214,6 +356,8 @@ class AppController:
         self.selected_object_name = None
         device = self.project.get_device(device_name)
         self.window.device_editor.set_device(device)
+        point_names = [obj.name for obj in device.objects] if device else []
+        self.window.object_editor.set_device_context(device_name if device else "", point_names)
         self.window.object_editor.set_object(None)
 
     def _on_object_selected(self, device_name: str, object_name: str) -> None:
@@ -221,6 +365,8 @@ class AppController:
         self.selected_object_name = object_name
         device = self.project.get_device(device_name)
         obj = device.get_object(object_name) if device else None
+        point_names = [item.name for item in device.objects] if device else []
+        self.window.object_editor.set_device_context(device_name if device else "", point_names)
         self.window.object_editor.set_object(obj)
         point_ref = f"{device_name}.{object_name}"
         self.window.select_live_point(point_ref)
@@ -233,10 +379,19 @@ class AppController:
 
     def _on_object_saved(self) -> None:
         self._refresh_runtime_registry()
+
+        if self.selected_device_name and self.selected_object_name:
+            device = self.project.get_device(self.selected_device_name)
+            obj = device.get_object(self.selected_object_name) if device else None
+            if obj is not None:
+                point_ref = f"{self.selected_device_name}.{self.selected_object_name}"
+                self.sim.registry.mark_dirty(point_ref)
+
         self.window.set_project(self.project)
         self.window.log("Object changes saved.")
 
     def start_simulation(self) -> None:
+        self._apply_ip_aliases(show_dialog=False)
         self.sim.start()
         self.protocols.start()
 
@@ -268,6 +423,7 @@ def main() -> int:
     app = QApplication(sys.argv)
 
     controller = AppController()
+    app.aboutToQuit.connect(controller.on_app_about_to_quit)
 
     sample = Path(__file__).resolve().parent / "sample_projects" / "training_lab.yaml"
     if sample.exists():
@@ -284,3 +440,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import operator
 import time
@@ -34,6 +34,9 @@ class LogicEngine:
         lhs_point = project.get_point_by_ref(rule.lhs_ref)
         action_point = project.get_point_by_ref(rule.action_ref)
         if lhs_point is None or action_point is None:
+            return
+
+        if getattr(action_point, "out_of_service", False):
             return
 
         op = OPS.get(rule.operator)
