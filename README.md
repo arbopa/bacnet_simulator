@@ -73,6 +73,12 @@ Or use one-click startup on Windows:
 .\run.bat
 ```
 
+## Executable Build (Windows)
+
+- Run `build_exe.bat` from repo root.
+- Build output: `dist/BACsim/BACsim.exe`
+- Full guide: [docs/windows_executable_build.md](docs/windows_executable_build.md)
+
 ## Open Sample Project
 
 - Sample project path: `sample_projects/training_lab.yaml`
@@ -164,6 +170,7 @@ bacnet_simulator/
     niagara_test_checklist.md
     future_releases.md
     template_yaml_authoring.md
+    windows_executable_build.md
   app/
     gui/
     models/

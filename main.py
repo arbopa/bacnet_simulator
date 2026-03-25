@@ -17,6 +17,16 @@ from app.utils.ip_alias_manager import IPAliasManager
 from app.utils.logging_setup import configure_logging
 from app.utils.validators import validate_project
 
+def app_root_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def bundled_resource_path(*parts: str) -> Path:
+    base = Path(getattr(sys, "_MEIPASS", app_root_dir()))
+    return base.joinpath(*parts)
+
 
 class AppController:
     def __init__(self):
@@ -106,7 +116,7 @@ class AppController:
         selected, _ = QFileDialog.getOpenFileName(
             self.window,
             "Open Project",
-            str(Path.cwd()),
+            str(app_root_dir()),
             "YAML Files (*.yaml *.yml)",
         )
         if not selected:
@@ -132,7 +142,7 @@ class AppController:
         selected, _ = QFileDialog.getSaveFileName(
             self.window,
             "Save Project As",
-            str(Path.cwd() / "sample_projects"),
+            str(app_root_dir() / "sample_projects"),
             "YAML Files (*.yaml *.yml)",
         )
         if not selected:
@@ -425,7 +435,7 @@ def main() -> int:
     controller = AppController()
     app.aboutToQuit.connect(controller.on_app_about_to_quit)
 
-    sample = Path(__file__).resolve().parent / "sample_projects" / "training_lab.yaml"
+    sample = bundled_resource_path("sample_projects", "training_lab.yaml")
     if sample.exists():
         try:
             controller.current_path = sample
