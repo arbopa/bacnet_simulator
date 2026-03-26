@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import sys
 from pathlib import Path
 
@@ -167,6 +168,78 @@ class AppController:
         alias_set = self._session_created_aliases.setdefault(adapter, set())
         alias_set.update(created_ips)
 
+    def _resolve_selected_adapter_bind_ip(self) -> str:
+        adapter = (self.project.bacnet.interface_alias or "").strip()
+        if not adapter:
+            return ""
+        return IPAliasManager.preferred_ipv4(adapter)
+
+    @staticmethod
+    def _is_valid_ipv4(ip: str) -> bool:
+        try:
+            return isinstance(ipaddress.ip_address(ip), ipaddress.IPv4Address)
+        except Exception:
+            return False
+
+    def _validate_and_prepare_bacnet_bind(self, *, show_dialog: bool) -> bool:
+        settings = self.project.bacnet
+        adapter = (settings.interface_alias or "").strip()
+        if not adapter:
+            msg = "[network] BACnet start blocked: no adapter selected."
+            self.window.log(msg)
+            if show_dialog:
+                QMessageBox.warning(self.window, "Network Setup", msg)
+            return False
+
+        bind_ip = self._resolve_selected_adapter_bind_ip()
+        if not bind_ip or (not self._is_valid_ipv4(bind_ip)):
+            msg = (
+                f"[network] BACnet start blocked: selected adapter '{adapter}' has no usable IPv4 address."
+            )
+            self.window.log(msg)
+            if show_dialog:
+                QMessageBox.warning(self.window, "Network Setup", msg)
+            return False
+
+        adapter_ips = set(IPAliasManager.list_ipv4_addresses(adapter))
+        if bind_ip not in adapter_ips:
+            msg = (
+                f"[network] BACnet start blocked: selected bind IP {bind_ip} is not present on adapter '{adapter}'."
+            )
+            self.window.log(msg)
+            if show_dialog:
+                QMessageBox.warning(self.window, "Network Setup", msg)
+            return False
+
+        invalid_devices: list[str] = []
+        for device in self.project.devices:
+            if not device.enabled:
+                continue
+            if (device.transport or "ip").strip().lower() != "ip":
+                continue
+            device_ip = (device.bacnet_ip or "").strip()
+            if not device_ip or device_ip == "0.0.0.0":
+                continue
+            if not self._is_valid_ipv4(device_ip):
+                invalid_devices.append(f"{device.name}={device_ip} (invalid IPv4)")
+                continue
+            if device_ip not in adapter_ips:
+                invalid_devices.append(f"{device.name}={device_ip}")
+
+        if invalid_devices:
+            sample = ", ".join(invalid_devices[:8])
+            msg = (
+                f"[network] BACnet start blocked: IP device address(es) not on selected adapter '{adapter}': {sample}"
+            )
+            self.window.log(msg)
+            if show_dialog:
+                QMessageBox.warning(self.window, "Network Setup", msg)
+            return False
+
+        settings.bind_ip = bind_ip
+        self.window.log(f"[network] Adapter '{adapter}' authoritative bind IP resolved to {bind_ip}.")
+        return True
+
     def _apply_ip_aliases(self, *, show_dialog: bool) -> bool:
         settings = self.project.bacnet
         if not settings.auto_manage_ip_aliases:
@@ -262,13 +335,16 @@ class AppController:
         self.project.bacnet.auto_manage_ip_aliases = bool(data["auto_manage_ip_aliases"])
         self.project.bacnet.alias_prefix_length = int(data["alias_prefix_length"])
         self.project.bacnet.remove_auto_aliases_on_exit = bool(data["remove_auto_aliases_on_exit"])
+        resolved_bind = self._resolve_selected_adapter_bind_ip()
+        if resolved_bind:
+            self.project.bacnet.bind_ip = resolved_bind
 
         mode = "enabled" if self.project.bacnet.auto_manage_ip_aliases else "disabled"
         cleanup_mode = "enabled" if self.project.bacnet.remove_auto_aliases_on_exit else "disabled"
         adapter = self.project.bacnet.interface_alias or "<none>"
         self.window.log(
             f"Network setup saved: auto alias {mode}, cleanup-on-exit {cleanup_mode}, "
-            f"adapter={adapter}, /{self.project.bacnet.alias_prefix_length}."
+            f"adapter={adapter}, bind_ip={self.project.bacnet.bind_ip}, /{self.project.bacnet.alias_prefix_length}."
         )
         self._persist_project_if_loaded("network settings")
 
@@ -401,7 +477,17 @@ class AppController:
         self.window.log("Object changes saved.")
 
     def start_simulation(self) -> None:
-        self._apply_ip_aliases(show_dialog=False)
+        if not self._apply_ip_aliases(show_dialog=False):
+            self.window.log("[network] BACnet start blocked due to alias setup errors.")
+            return
+
+        if not self._validate_and_prepare_bacnet_bind(show_dialog=True):
+            return
+
+        self._persist_project_if_loaded("resolved BACnet bind")
+        self.window.log(
+            f"[network] BACnet startup validation: Bound to {self.project.bacnet.bind_ip}:{self.project.bacnet.base_udp_port}"
+        )
         self.sim.start()
         self.protocols.start()
 
@@ -450,7 +536,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-
 

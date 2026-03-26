@@ -144,12 +144,24 @@ class BacnetManager(QObject):
         async def runner():
             assert self._project is not None
             self._patch_bacpypes3_ipv4_reuse_port()
-            bind_ip = self._project.bacnet.bind_ip
+            bind_ip = (self._project.bacnet.bind_ip or "").strip()
+            if (not bind_ip) or bind_ip == "0.0.0.0":
+                raise RuntimeError("BACnet bind_ip is not resolved. Select an adapter and retry.")
+
             self._server = BacnetDeviceServer(bind_ip, registry=self._registry)
             try:
                 await self._server.start(self._project.devices)
                 self._running = True
-                self.status_changed.emit("BACnet running")
+                endpoints: list[str] = []
+                for runtime in self._server.devices.values():
+                    addr = getattr(runtime.application, "localAddress", None)
+                    if addr is not None:
+                        endpoints.append(str(addr))
+                endpoints = sorted(set(endpoints))
+                if endpoints:
+                    self.status_changed.emit(f"BACnet running (Bound to {', '.join(endpoints)})")
+                else:
+                    self.status_changed.emit("BACnet running")
                 await self._server.loop_forever(self._tick_event, self._stop_event)
             except Exception as err:
                 logger.exception("BACnet manager failed")
@@ -170,3 +182,4 @@ class BacnetManager(QObject):
             self._tick_event = None
             self._stop_event = None
             self._server = None
+

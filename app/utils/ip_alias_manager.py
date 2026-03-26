@@ -104,6 +104,40 @@ class IPAliasManager:
         return False
 
     @staticmethod
+    def preferred_ipv4(interface_alias: str) -> str:
+        """
+        Pick a stable bind candidate for an adapter.
+        Preference:
+        1) Preferred + non-manual + non-link-local
+        2) Preferred + non-link-local
+        3) Any non-link-local
+        4) First available IPv4
+        """
+        infos = IPAliasManager.list_ipv4_info(interface_alias)
+        if not infos:
+            return ""
+
+        def is_preferred(item: IPv4AddressInfo) -> bool:
+            return (item.address_state or "").strip().lower() == "preferred"
+
+        def is_manual(item: IPv4AddressInfo) -> bool:
+            return (item.prefix_origin or "").strip().lower() == "manual"
+
+        def is_link_local(item: IPv4AddressInfo) -> bool:
+            return (item.ip or "").startswith("169.254.")
+
+        buckets = [
+            [row for row in infos if is_preferred(row) and (not is_manual(row)) and (not is_link_local(row))],
+            [row for row in infos if is_preferred(row) and (not is_link_local(row))],
+            [row for row in infos if not is_link_local(row)],
+            list(infos),
+        ]
+        for bucket in buckets:
+            if bucket:
+                return bucket[0].ip
+        return ""
+
+    @staticmethod
     def ensure_ip_aliases(interface_alias: str, ips: List[str], prefix_length: int = 24) -> AliasApplyResult:
         result = AliasApplyResult(requested_ips=list(ips))
         existing = set(IPAliasManager.list_ipv4_addresses(interface_alias))
@@ -150,3 +184,4 @@ class IPAliasManager:
                 result.errors.append(f"{ip}: {err}")
 
         return result
+
