@@ -29,15 +29,16 @@ class BacnetManager(QObject):
         self._stop_event: Optional[asyncio.Event] = None
         self._server: Optional[BacnetDeviceServer] = None
         self._running = False
+        self._availability_error = ""
         self._available = self._check_bacpypes3()
 
-    @staticmethod
-    def _check_bacpypes3() -> bool:
+    def _check_bacpypes3(self) -> bool:
         try:
             import bacpypes3  # noqa: F401
 
             return True
-        except Exception:
+        except Exception as err:
+            self._availability_error = str(err)
             return False
 
     @staticmethod
@@ -92,6 +93,12 @@ class BacnetManager(QObject):
     def available(self) -> bool:
         return self._available
 
+    @property
+    def unavailable_reason(self) -> str:
+        if self._available:
+            return ""
+        return self._availability_error or "BACpypes3 import failed."
+
     def set_project(self, project: ProjectModel) -> None:
         self._project = project
 
@@ -107,7 +114,7 @@ class BacnetManager(QObject):
             self.error.emit("Cannot start BACnet: no project loaded.")
             return
         if not self._available:
-            self.error.emit("BACpypes3 not available in the current Python environment.")
+            self.error.emit(f"BACpypes3 not available in the current Python environment: {self.unavailable_reason}")
             return
 
         self._thread = threading.Thread(target=self._thread_main, daemon=True)

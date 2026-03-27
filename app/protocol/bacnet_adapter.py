@@ -26,6 +26,10 @@ class BacnetProtocolAdapter(QObject):
     def available(self) -> bool:
         return self._manager.available
 
+    @property
+    def unavailable_reason(self) -> str:
+        return self._manager.unavailable_reason
+
     def set_project(self, project: ProjectModel) -> None:
         self._manager.set_project(project)
 

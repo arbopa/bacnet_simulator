@@ -47,7 +47,8 @@ class ProtocolManager(QObject):
         self._sync_registry_consumers()
         for adapter in self._adapters:
             if not adapter.available:
-                self.message.emit(f"[{adapter.name}] unavailable in current environment")
+                reason = str(getattr(adapter, "unavailable_reason", "") or "unknown")
+                self.message.emit(f"[{adapter.name}] unavailable in current environment: {reason}")
                 continue
             adapter.start()
 
@@ -58,3 +59,4 @@ class ProtocolManager(QObject):
     def notify_simulation_tick(self) -> None:
         for adapter in self._adapters:
             adapter.notify_simulation_tick()
+

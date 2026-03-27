@@ -95,6 +95,16 @@ class AppController:
 
     def _on_protocol_message(self, message: str) -> None:
         self.window.log(message)
+
+        if message.startswith("[bacnet] unavailable in current environment"):
+            if self.sim.running:
+                self.window.log("[network] BACnet unavailable; auto-stopping simulation.")
+                self.stop_simulation()
+            if not self._startup_failure_alerted:
+                self._startup_failure_alerted = True
+                QMessageBox.critical(self.window, "BACnet Unavailable", message)
+            return
+
         if not message.startswith("[bacnet] BACnet start failed"):
             return
         if self.sim.running:
@@ -562,5 +572,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
 
