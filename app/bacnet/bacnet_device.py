@@ -102,6 +102,8 @@ class BacnetDeviceServer:
 
         ip_devices = [d for d in device_models if d.enabled and not self._is_mstp(d)]
         mstp_devices = [d for d in device_models if d.enabled and self._is_mstp(d)]
+        if not ip_devices:
+            raise RuntimeError("No enabled BACnet/IP devices are configured to bind.")
 
         mstp_by_parent: dict[str, list[DeviceModel]] = defaultdict(list)
         for child in mstp_devices:
@@ -199,6 +201,15 @@ class BacnetDeviceServer:
 
         self.running = True
 
+    def active_bind_endpoints(self) -> list[str]:
+        endpoints: list[str] = []
+        for runtime in self.devices.values():
+            if self._is_mstp(runtime.model):
+                continue
+            bind_ip = self._device_bind_ip(runtime.model)
+            endpoints.append(f"{bind_ip}:{runtime.model.bacnet_port}")
+        return sorted(set(endpoints))
+
     async def stop(self) -> None:
         for runtime in self.devices.values():
             close_fn = getattr(runtime.application, "close", None)
@@ -285,3 +296,4 @@ class BacnetDeviceServer:
                 tick_event.clear()
             except asyncio.TimeoutError:
                 pass
+

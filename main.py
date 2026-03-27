@@ -43,6 +43,7 @@ class AppController:
         self.selected_device_name: str | None = None
         self.selected_object_name: str | None = None
         self._session_created_aliases: dict[str, set[str]] = {}
+        self._startup_failure_alerted = False
 
         self._connect_signals()
         self._set_project(self.project)
@@ -75,7 +76,7 @@ class AppController:
         self.sim.started.connect(lambda: self.window.log("Simulation running."))
         self.sim.stopped.connect(lambda: self.window.log("Simulation stopped."))
 
-        self.protocols.message.connect(self.window.log)
+        self.protocols.message.connect(self._on_protocol_message)
 
         self.window.live_table.itemSelectionChanged.connect(self._refresh_selected_trend)
 
@@ -91,6 +92,18 @@ class AppController:
 
     def show(self) -> None:
         self.window.show()
+
+    def _on_protocol_message(self, message: str) -> None:
+        self.window.log(message)
+        if not message.startswith("[bacnet] BACnet start failed"):
+            return
+        if self.sim.running:
+            self.window.log("[network] BACnet startup failed; auto-stopping simulation.")
+            self.stop_simulation()
+        if not self._startup_failure_alerted:
+            self._startup_failure_alerted = True
+            QMessageBox.critical(self.window, "BACnet Startup Failed", message)
+        return
 
     def _refresh_runtime_registry(self) -> None:
         self.sim.rebuild_runtime_registry()
@@ -477,6 +490,7 @@ class AppController:
         self.window.log("Object changes saved.")
 
     def start_simulation(self) -> None:
+        self._startup_failure_alerted = False
         if not self._apply_ip_aliases(show_dialog=False):
             self.window.log("[network] BACnet start blocked due to alias setup errors.")
             return
@@ -484,13 +498,25 @@ class AppController:
         if not self._validate_and_prepare_bacnet_bind(show_dialog=True):
             return
 
+        adapter = (self.project.bacnet.interface_alias or "").strip() or "<none>"
+        ports = sorted(
+            {
+                int(device.bacnet_port)
+                for device in self.project.devices
+                if device.enabled and (device.transport or "ip").strip().lower() == "ip"
+            }
+        )
+        port_text = ", ".join(str(port) for port in ports) if ports else "<none>"
+
         self._persist_project_if_loaded("resolved BACnet bind")
+        self.window.log(
+            f"[network] Startup checkpoint: selected adapter={adapter}, resolved bind_ip={self.project.bacnet.bind_ip}, requested_udp_ports={port_text}"
+        )
         self.window.log(
             f"[network] BACnet startup validation: Bound to {self.project.bacnet.bind_ip}:{self.project.bacnet.base_udp_port}"
         )
         self.sim.start()
         self.protocols.start()
-
     def stop_simulation(self) -> None:
         self.sim.stop()
         self.protocols.stop()
@@ -536,4 +562,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 

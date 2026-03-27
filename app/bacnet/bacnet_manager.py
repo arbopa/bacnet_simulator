@@ -144,28 +144,39 @@ class BacnetManager(QObject):
         async def runner():
             assert self._project is not None
             self._patch_bacpypes3_ipv4_reuse_port()
+
             bind_ip = (self._project.bacnet.bind_ip or "").strip()
             if (not bind_ip) or bind_ip == "0.0.0.0":
                 raise RuntimeError("BACnet bind_ip is not resolved. Select an adapter and retry.")
 
+            ports = sorted(
+                {
+                    int(d.bacnet_port)
+                    for d in self._project.devices
+                    if d.enabled and (d.transport or "ip").strip().lower() == "ip"
+                }
+            )
+            port_text = ", ".join(str(p) for p in ports) if ports else "<none>"
+            self.status_changed.emit(
+                f"Startup checkpoint: selected bind_ip={bind_ip}, requested_udp_ports={port_text}"
+            )
+
             self._server = BacnetDeviceServer(bind_ip, registry=self._registry)
             try:
                 await self._server.start(self._project.devices)
+                endpoints = self._server.active_bind_endpoints()
+                if not endpoints:
+                    raise RuntimeError("BACnet bind assertion failed: no active UDP bind endpoints after start")
+
+                endpoint_text = ", ".join(endpoints)
+                self.status_changed.emit(f"Startup checkpoint: socket bind success ({endpoint_text})")
                 self._running = True
-                endpoints: list[str] = []
-                for runtime in self._server.devices.values():
-                    addr = getattr(runtime.application, "localAddress", None)
-                    if addr is not None:
-                        endpoints.append(str(addr))
-                endpoints = sorted(set(endpoints))
-                if endpoints:
-                    self.status_changed.emit(f"BACnet running (Bound to {', '.join(endpoints)})")
-                else:
-                    self.status_changed.emit("BACnet running")
+                self.status_changed.emit(f"BACnet running (Bound to {endpoint_text})")
+                self.status_changed.emit("Startup checkpoint: BACnet task/thread started")
                 await self._server.loop_forever(self._tick_event, self._stop_event)
             except Exception as err:
-                logger.exception("BACnet manager failed")
-                self.error.emit(f"BACnet start failed: {err}")
+                logger.exception("BACnet manager failed for bind target %s", bind_ip)
+                self.error.emit(f"BACnet start failed (bind={bind_ip}, ports={port_text}): {err}")
             finally:
                 try:
                     if self._server:
