@@ -1,22 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
+
+bacpypes3_datas, bacpypes3_binaries, bacpypes3_hiddenimports = collect_all("bacpypes3")
 
 
 a = Analysis(
     ['main.py'],
     pathex=['.'],
-    binaries=[],
+    binaries=bacpypes3_binaries,
     datas=[
         ('sample_projects', 'sample_projects'),
         ('docs', 'docs'),
         ('README.md', '.'),
         ('TERMS.md', '.'),
         ('LICENSE-COMMERCIAL.md', '.'),
-    ],
-    hiddenimports=collect_submodules("bacpypes3"),
+    ] + bacpypes3_datas,
+    hiddenimports=bacpypes3_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -52,4 +54,3 @@ coll = COLLECT(
     upx_exclude=[],
     name='BACsim',
 )
-

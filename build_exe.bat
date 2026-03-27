@@ -34,7 +34,13 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-
+echo [BACsim] Verifying bacpypes3 in build venv...
+".venv-build\Scripts\python.exe" -m pip show bacpypes3 >nul 2>&1
+if errorlevel 1 (
+  echo [BACsim] bacpypes3 is missing in build venv. Build cannot continue.
+  pause
+  exit /b 1
+)
 echo [BACsim] Building executable...
 ".venv-build\Scripts\python.exe" -m PyInstaller --noconfirm --clean bacsim.spec
 if errorlevel 1 (
